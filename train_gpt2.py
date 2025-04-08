@@ -93,6 +93,9 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
+        # weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
+        
     def forward(self, idx, targets=None):
         # idx is of shape (B, T) Batch dimension and Time dimension. T tokens and B independent sequences
         B, T = idx.size()
@@ -166,7 +169,7 @@ class GPT(nn.Module):
 import tiktoken
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes, split):
+    def __init__(self, B, T):
         self.B = B
         self.T = T
         
@@ -177,7 +180,7 @@ class DataLoaderLite:
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
         print(f"loaded{len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.token) // (B * T)} batches")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
         
         # state
         self.current_position = 0
@@ -203,40 +206,26 @@ elif hasattr(torch.backends, "mps") and torch.backens.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
 
-# get a data batch
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-with open('input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]
-tokens = enc.encode(text)
-B, T = 4, 32
-buf = torch.tensor(tokens[:B*T + 1])
-buf = buf.to(device) # tensors are not stateful like model, .to(device) makes a new tensor so we have to set it =
-x = buf[:-1].view(B, T)
-y = buf[1:].view(B, T)
+train_loader = DataLoaderLite(B=4, T=32)
 
-num_return_sequences = 5
-max_length = 30
-
-# model = GPT.from_pretrained('gpt2')
 # get logits
 model = GPT(GPTConfig())
 model.to(device)
-# logits, loss = model(x, y)
 
 # optimize!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
-    optimizer.zero_grad() # ALWAYS start with zero gradients
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
     optimizer.step() # update params
     print(f"step {i}, loss: {loss.item()}") # item ships the tensor from the gpu and give us the float on cpu
 
-
-print(loss)
-import sys; sys.exit(0)
+model.eval()
+num_return_sequences = 5
+max_length = 30
 
 # prefix tokens
 enc = tiktoken.get_encoding('gpt2')
@@ -253,7 +242,7 @@ torch.cuda.manual_seed(42)
 while x.size(1) < max_length:
     # forward the model to get the logits
     with torch.no_grad():
-        logits = model(x) # (B, T, vocab_size)
+        logits, _ = model(x) # (B, T, vocab_size)
         # take the logics at the last position
         logits = logits[:, -1, :] # (B, vocab size)
         # get the probabilities
