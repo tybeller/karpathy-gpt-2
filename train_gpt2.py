@@ -37,11 +37,14 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
         # attention (materializes the large (T,T) matrix for all the queries and keys)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) # tokens only attend to tokens before them
-        att = F.softmax(att, dim=-1) # normalizes attention, always sums to 1
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs). Basically doing weighted sum of values of tokens we found interesting
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) # tokens only attend to tokens before them
+        # att = F.softmax(att, dim=-1) # normalizes attention, always sums to 1
+        # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs). Basically doing weighted sum of values of tokens we found interesting
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs by side by side
         # output projection
         y = self.c_proj(y)
@@ -82,7 +85,7 @@ class Block(nn.Module):
 @dataclass
 class GPTConfig:
     block_size: int = 1024 # max sequence length
-    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 byte tokens + 1 <|endoftext|> token
+    vocab_size: int = 50304 # number of tokens: 50,000 BPE merges + 256 byte tokens + 1 <|endoftext|> token
     n_layer: int = 12 # number of layers
     n_head: int = 12 # number of heads
     n_embd: int = 768 # embedding dimension
@@ -235,6 +238,9 @@ train_loader = DataLoaderLite(B=4, T=1024)
 # get logits
 model = GPT(GPTConfig())
 model.to(device)
+model = torch.compile(model)
+
+torch.set_float32_matmul_precision('high')
 
 # optimize!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
@@ -243,7 +249,8 @@ for i in range(50):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x, y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x, y)
     loss.backward()
     optimizer.step() # update params
 
