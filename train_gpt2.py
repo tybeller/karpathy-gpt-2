@@ -250,7 +250,8 @@ for i in range(50):
     torch.cuda.synchronize()
     t1=time.time()
     dt = (t1-t0)*1000 # time diff in ms
-    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms") # item ships the tensor from the gpu and give us the float on cpu
+    tokens_per_second = (train_loader.B * train_loader.T) / (t1-t0)
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_second}") # item ships the tensor from the gpu and give us the float on cpu
 
 model.eval()
 num_return_sequences = 5
